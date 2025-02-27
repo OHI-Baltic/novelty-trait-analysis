@@ -4,4 +4,588 @@ format: html
 editor: visual
 ---
 
-## 
+## Set-up & Novelty Function
+
+```{r libraries and directories}
+#| code-fold: true
+#| code-summary: Libraries and Directories
+#| label: libraries-and-directories
+#| message: false
+
+## libraries
+pkg <- c("here", "vegan", "analogue", "EnvCpt", "dplyr", "zoo", "ggplot2")
+for(i in 1:length(pkg)){
+  if(!(pkg[i] %in% installed.packages())){
+    install.packages(pkg[i])
+  }
+}
+for(i in 1:length(pkg)){
+  library(pkg[i], character.only = TRUE)
+}
+  
+## file.paths
+data_dir <- here("files-from-Thorsten/data")
+save_dir <- here("output")
+```
+
+```{r function for novelty and change}
+#| code-fold: true
+#| code-summary: Function for Novelty and Change
+#| label: function-for-novelty-and-change
+
+## Yosr's function from COMFORT.R script ----
+
+## M is a dataframe or matrix with colname, in wide format
+## with numeric columns for Year, and each trait or species, 
+## or other 'feature' to evaluate novelty across; 
+## and categorical column for Area subdivisions or gridcells
+
+## baseline start and end should be years used to compare
+## end_year is the last year to be compared to the baseline...
+
+## year params could instead refer to binned time periods 
+## (but needs to be an unbroken seq of integers, and be same column for baseline and future)
+
+## method (Hellinger or EDLog) is the metric to use to evaluate dissimilarity distance
+
+Novelty_function <- function(M, start_baseline, end_baseline, end_year, method){
+  
+  ## make sure M is a dataframe
+  ## if it's a tibble, some [] subsetting stuff breaks
+  M <- as.data.frame(M)
+  
+  ## columns with features of the space we're 
+  ## calculating novelty over
+  novelty_feature_cols <- which(!stringr::str_detect(names(M), "Year|Area|Bin"))
+  novelty_feature_names <- names(M)[novelty_feature_cols]
+  
+  ## initialize a dataframe to hold results
+  ## cma_dist will be the distance, found using the 'close modern analogues' function
+  ## TS.ind are rownames of TS, to keep track how results align with M entries, w/ Years etc
+  ## FS.ind are rownames of FS (baseline in comparisons)
+  ## TS.area is the area for which novelty is evaluated 
+  ## TS.year is the year for which novelty is evaluated
+  ## FS.area is the area which has minimum dissimilarity, 
+  ## i.e. area or gridcell which is the closest analog
+  ## FS.year is the year in the baseline corresponding to the closest analog
+  Ana_result <- data.frame(matrix(
+    NA, nrow = 0, ncol = 7,
+    dimnames = list(NULL, c(
+      "cma_dist", "TS.ind", "FS.ind",
+      "TS.area", "TS.year", "FS.area", "FS.year"
+    ))
+  ))
+  Ana_result <- Ana_result |> 
+    mutate(across(everything(), as.numeric)) |> 
+    mutate(across(matches("area"), as.character))
+  
+  ## data which correspond to the years in the baseline
+  ## using FS rownames to keep track of ...
+  FS <- M[which(M[,"Year"] %in% c(start_baseline:end_baseline)),]
+  FS.a <- FS[,novelty_feature_cols]
+  names.fs <- rownames(FS.a)
+  n.fs <- length(names.fs)
+  
+  if(nrow(FS) > 0){
+    for(t in (end_baseline+1):end_year){
+      ## select data for the year to be compared
+      ## (year to calculate novelty for) (???)
+      TS <- M[which(M[,"Year"] == t),]
+      TS.a <- TS[,novelty_feature_cols]
+      names.ts <- rownames(TS.a)
+      n.ts <- length(names.ts)
+      
+      S.a <- rbind(TS.a, FS.a)
+      
+      if(nrow(TS) > 0){
+        if(method == "Hellinger"){
+          
+          ## CALCULATE HELINGER DISTANCE ----
+          ## helinger distance dissimilarity 
+          ## based on the composition of the area
+          
+          ## make a matrix S.a2 where entries
+          ## are normalized by the total value in the row
+          ## (sum of all features we're calculating novelty across)
+          S.a2 <- S.a
+          for(i in 1:ncol(S.a)){
+            for(j in 1:nrow(S.a)){
+              S.a2[j,i] <- S.a[j,i]/rowSums(S.a[j,])
+            }
+          }
+          S.a2[which(rowSums(TS.a) == FALSE),] <- 0 ## when would rowSums be false??
+          ## using distance function from 'analogue' package
+          ## 'flexibly calculates distance or dissimilarity measures...'
+          S.d2 <- as.matrix(distance(S.a2, method = "chord", dist = T))
+          
+          S.dd <- S.d2
+          S.dd <- matrix(
+            ## keep only rows corresponding to TS ie. year to evaluated per loop 
+            ## and cols not with dissimilarity corresponding to the TS rows
+            ## each row should correspond to one spatial area
+            S.dd[ 1 : n.ts, (n.ts+1) : (n.ts+n.fs) ],
+            nrow = n.ts,
+            ncol = length((n.ts+1) : (n.ts+n.fs))
+          )
+          colnames(S.dd) <- rownames(FS.a)
+          rownames(S.dd) <- rownames(TS.a)
+          
+        } else if(method == "EDlog"){
+          ## Euclidean distance dissimilarity 
+          ## based on the stock size of the area
+          
+          S.a1 <- S.a
+          for(i in 1:ncol(S.a)){ 
+            ## for to reduce to the log and divide by the number of variables
+            ## to avoid the influence of bigger dataset
+            for(j in 1:nrow(S.a)){
+              S.a1[j,i] <- log(S.a[j,i]+1)
+            }
+          }
+          S.d1 <- as.matrix(dist(S.a1, method = "euclidean"))
+          
+          S.dd <- S.d1 
+          S.dd <- matrix(
+            S.dd[ 1 : n.ts, (n.ts+1) : (n.ts+n.fs) ], 
+            nrow = n.ts, 
+            ncol = length((n.ts+1) : (n.ts+n.fs))
+          )
+          colnames(S.dd) <- rownames(FS.a)
+          rownames(S.dd) <- rownames(TS.a)
+        }
+        
+        ## make a structure 'close' that will contain various attributes, 
+        ## used in evaluating closest analogue
+        close <- vector("list", n.ts)
+        for(i in seq_len(n.ts)){
+          if(is.matrix(S.dd)){
+            close[[i]] <- sort(S.dd[i,])
+          } else {
+            close[[i]] <- sort(S.dd[i])
+          }
+        }
+        names(close) <- names.ts 
+        
+        Fuse.cma <- list(close)
+        names(Fuse.cma)[1] <- "close"
+        
+        ## cma 'close modern analogues' function is from the 'analogue' R package
+        .call <- match.call()
+        .call[[1]] <- as.name("cma")
+        structure(
+          list(
+            close = close,
+            call = .call, 
+            quant = "none", 
+            probs = "none",
+            method = "fuse",
+            n.analogs = "all"
+          ),
+          class = "cma"
+        )
+        class(Fuse.cma) <- "cma"
+        Ana.cma <- Fuse.cma
+        
+        ## Extract the cma distance for each TS sample
+        ## and writes them in data.frame Close.dat
+        Close.dat <- data.frame(matrix(
+          NA, nrow = 0, ncol = 5,
+          dimnames = list(NULL, c(
+            "cma_dist", "TS.ind", "FS.ind",
+            "TS.area", "TS.year"
+          ))
+        ))
+        TS.ind <- row.names(TS) 
+        TS.n <- length(Ana.cma$close)
+        
+        ## for each Area in TS, make a dataframe with the dissimilarity,
+        ## as well as TS and FS indices and areas
+        for(i in 1:TS.n){
+          k <- TS.ind[i]
+          if(length(Ana.cma[["close"]][[k]]) > 0){
+            ## first entry of each Ana.cma[["close"]] entry is the smallest distance
+            temp <- as.data.frame(Ana.cma[["close"]][[k]][1])
+            colnames(temp)[1] <- "cma_dist"
+            temp$TS.ind <- as.numeric(TS.ind[i])
+            
+            if(nrow(FS) == 1){
+              temp$FS.ind <- as.numeric(row.names(FS))
+            } else {
+              temp$FS.ind <- as.numeric(row.names(temp))
+            }
+            temp$TS.area <- TS[i,"Area"]
+            temp$TS.year <- TS[i,"Year"]
+            Close.dat <- rbind(Close.dat, temp)
+          }
+        }
+        row.names(Close.dat) <- seq(nrow(Close.dat))
+        FS.ind <- row.names(FS)    
+        
+        for(i in 1:nrow(Close.dat)){
+          k <- as.numeric(Close.dat$FS.ind[i])
+          Close.dat$FS.area[i] <- as.character(FS[which(rownames(FS) == k), "Area"])
+          Close.dat$FS.year[i] <- FS[which(rownames(FS) == k), "Year"]
+        }
+        
+        Ana_result <- rbind(Ana_result, Close.dat)
+      }
+    }
+  }
+  
+  return(Ana_result)
+}
+```
+
+## Data
+
+```{r load data}
+#| code-fold: true
+#| code-summary: Load Data
+#| label: load-data
+df0 <- read.csv(file.path(data_dir, "Multitrophic_CWM_traits_BalticSea.csv"), sep = ";") 
+df <- df0 |> 
+  filter(Taxa == "Benthos", Variable == "abundance") |> 
+  select(Area, Year, Trait, Value) |> 
+  mutate(across(c("Year", "Value"), as.numeric))
+```
+
+```{r 5-year bin averages}
+#| code-fold: true
+#| code-summary: Averages in 5-Year Bins
+#| label: averages-5-year-bins
+
+## bins of 5 years from 1973-2013 
+## with 40 bins
+traitdf_bin5yr_long <- df |> 
+  filter(Year %in% 1979:2013) |> 
+  mutate(Bin = ceiling((Year-1978)/5)) |> 
+  group_by(Bin) |> 
+  mutate(maxYear = max(Year)) |> 
+  group_by(Bin, Area) |> 
+  mutate(nYears = n_distinct(Year)) |> 
+  group_by(Area, Trait, Bin) |> 
+  mutate(Value = mean(Value)) |> 
+  ungroup()
+traitdf_bin5yr_long$Trait <- factor(
+  traitdf_bin5yr_long$Trait,
+  levels = c(
+    "Lecitotrophic", "Epibenthic", "Planktotrophic",
+    "Deposit.feeder", "Suspension.feeder", "Scavenger", "Predator", 
+    "Size", "Direct.dvlpt", "Top", "Middle"
+  )
+)
+## expand so have missing years filled with same 5-year bin average
+## in many cases 5-year bin averages are based on fewer than 5 values
+## because of missing data
+traitdf_bin5yr <- traitdf_bin5yr_long |> 
+  distinct(Area, Trait, maxYear, Value) |> 
+  rowwise() |> 
+  mutate(Year = list((maxYear-4):maxYear)) |> 
+  ungroup() |> 
+  tidyr::unnest(cols = c(Year)) |> 
+  tidyr::pivot_wider(names_from = "Trait", values_from = "Value")
+```
+
+```{r 5-year bin averages plots}
+#| code-fold: true
+#| code-summary: Plot Timeseries of 5-Year Binned Data
+#| label: plot-binned-timeseries 
+
+## this is to checking pattern of missing years
+ggplot(traitdf_bin5yr_long) + 
+  geom_point(
+    aes(x = Year, y = Value, color = Area),
+    shape = 95, size = 4) +
+  geom_point(
+    aes(x = Year, y = Value, color = Area),
+    size = 0.5, alpha = 0.5) +
+  geom_vline(aes(xintercept = maxYear), linewidth = 0.1) +
+  facet_wrap(~Trait, scales = "free_y", nrow = 4) +
+  theme(legend.position = c(0.8, 0.1)) + 
+  labs(x = "\nYear", y = "Abundance\nAverages in 5-Year Bins\n")
+```
+
+```{r 5-year rolling means}
+#| code-fold: true
+#| code-summary: 5-Year Rolling Averages
+#| label: 5-year-rolling-averages
+
+## 5 year rolling mean
+traitdf_ra5yr_long <- df |> 
+  arrange(Area, Trait, Year) |> 
+  group_by(Area, Trait) |> 
+  mutate(MinValue = zoo::rollapply(Value, 5, min, fill = NA, align = "right", na.rm = TRUE)) |> 
+  mutate(MaxValue = zoo::rollmax(Value, 5, fill = NA, align = "right", na.rm = TRUE)) |> 
+  mutate(Value = zoo::rollmean(Value, 5, fill = NA, align = "right", na.rm = TRUE)) |> 
+  ## set abundance value rolling means less than zero to zero
+  mutate(Value = ifelse(Value > 0, Value, 0)) |> 
+  ungroup() |> 
+  dplyr::filter(Year %in% 1983:2013) |> 
+  mutate(Bin = ceiling((Year-1978)/5)) |> 
+  group_by(Bin) |> 
+  mutate(maxYear = max(Year))
+traitdf_ra5yr_long$Trait <- factor(
+  traitdf_ra5yr_long$Trait,
+  levels = c(
+    "Lecitotrophic", "Epibenthic", "Planktotrophic",
+    "Deposit.feeder", "Suspension.feeder", "Scavenger", "Predator", 
+    "Size", "Direct.dvlpt", "Top", "Middle"
+  )
+)
+
+traitdf_ra5yr <- traitdf_ra5yr_long |> 
+  select(-MinValue, -MaxValue) |> 
+  tidyr::pivot_wider(names_from = "Trait", values_from = "Value") |> 
+  ungroup()
+```
+
+```{r 5-year rolling means plots}
+#| code-fold: true
+#| code-summary: Plot the 5-Year Rolling Averages
+#| label: plot-the-rolling-mean
+
+## plot with same 5 year divisions as in binned plot above
+ggplot(traitdf_ra5yr_long) + 
+  geom_line(
+    aes(x = Year, y = Value, color = Area),
+    linewidth = 0.2) +
+  geom_point(
+    aes(x = Year, y = Value, color = Area),
+    size = 0.5, alpha = 0.5) +
+  geom_vline(aes(xintercept = maxYear), linewidth = 0.1) +
+  facet_wrap(~Trait, scales = "free_y", nrow = 4) +
+  theme(legend.position = c(0.8, 0.1)) + 
+  labs(x = "\nYear", y = "Abundance\n5-Year Rolling Means\n")
+```
+
+```{r 5-year rolling means gapfilled}
+#| code-fold: true
+#| code-summary: 5-Year Rolling Averages with Gapfilling
+#| label: 5-year-rolling-averages-gapfilled
+
+## 5 year rolling mean, with gap-filling for missing years
+traitdf_gf_ra5yr_long <- df |> 
+  ## GAPFILLING
+  tidyr::complete(Area, Trait, Year) |> 
+  ## ROLLING MEAN
+  arrange(Area, Trait, Year) |> 
+  group_by(Area, Trait) |> 
+  mutate(MinValue = zoo::rollapply(Value, 5, min, fill = NA, align = "right", na.rm = TRUE)) |> 
+  mutate(MaxValue = zoo::rollapply(Value, 5, max, fill = NA, align = "right", na.rm = TRUE)) |> 
+  mutate(Value = zoo::rollmean(Value, 5, fill = NA, align = "right", na.rm = TRUE)) |> 
+  ## set abundance value rolling means less than zero to zero
+  mutate(Value = ifelse(Value > 0, Value, 0)) |> 
+  ungroup() |> 
+  dplyr::filter(Year %in% 1983:2013) |> 
+  mutate(Bin = ceiling((Year-1978)/5)) |> 
+  group_by(Bin) |> 
+  mutate(maxYear = max(Year))
+traitdf_gf_ra5yr_long$Trait <- factor(
+  traitdf_gf_ra5yr_long$Trait,
+  levels = c(
+    "Lecitotrophic", "Epibenthic", "Planktotrophic",
+    "Deposit.feeder", "Suspension.feeder", "Scavenger", "Predator", 
+    "Size", "Direct.dvlpt", "Top", "Middle"
+  )
+)
+
+traitdf_gf_ra5yr <- traitdf_gf_ra5yr_long |> 
+  select(-MinValue, -MaxValue) |> 
+  tidyr::pivot_wider(names_from = "Trait", values_from = "Value") |> 
+  ungroup()
+```
+
+```{r 5-year rolling means gapfilled plots}
+#| code-fold: true
+#| code-summary: Plot the 5-Year Rolling Averages with Gapfilling
+#| label: plot-the-gapfilled-rolling-mean
+
+## plot with same 5 year divisions as in binned plot above
+ggplot(traitdf_gf_ra5yr_long) + 
+  geom_line(
+    aes(x = Year, y = Value, color = Area),
+    linewidth = 0.2) +
+  geom_point(
+    aes(x = Year, y = Value, color = Area),
+    size = 0.5, alpha = 0.5) +
+  geom_vline(aes(xintercept = maxYear), linewidth = 0.1) +
+  facet_wrap(~Trait, scales = "free_y", nrow = 4) +
+  theme(legend.position = c(0.8, 0.1)) + 
+  labs(x = "\nYear", y = "Abundance\n5-Year Gap-Filled Rolling Means\n")
+```
+
+```{r original data plot}
+#| code-fold: true
+#| code-summary: Plot Original Data, overlaying 5-Year Rolling Min-Max-Means
+#| label: plot-origina-timeseries 
+dfPlot <- df
+dfPlot$Trait <- factor(
+  dfPlot$Trait,
+  levels = c(
+    "Lecitotrophic", "Epibenthic", "Planktotrophic",
+    "Deposit.feeder", "Suspension.feeder", "Scavenger", "Predator", 
+    "Size", "Direct.dvlpt", "Top", "Middle"
+  )
+)
+
+ggplot() + 
+  geom_ribbon(
+    data = traitdf_gf_ra5yr_long,
+    aes(x = Year, ymin = MinValue, ymax = MaxValue, fill = Area),
+    alpha = 0.25) +
+  geom_line(
+    data = traitdf_gf_ra5yr_long,
+    aes(x = Year, y = Value, color = Area),
+    linewidth = 0.2) +
+  geom_point(
+    data = dfPlot,
+    aes(x = Year, y = Value, color = Area),
+    size = 0.8, alpha = 0.8) +
+  geom_vline(
+    data = traitdf_gf_ra5yr_long,
+    aes(xintercept = maxYear), 
+    linewidth = 0.1) +
+  facet_wrap(~Trait, scales = "free_y", nrow = 4) +
+  theme(legend.position = c(0.8, 0.1)) + 
+  labs(x = "\nYear", y = "Abundance\nOriginal Data\n")
+```
+
+
+## Calculate Novelty and Rate of Change
+
+Example calculation, of (1) Hellinger-distance and (2) Rate of Change, with the 3 spatial regions, Benthos traits, and Abundance data (biomass has too many NAs)
+
+```{r calculate degree of novelty}
+#| code-fold: true
+#| code-summary: Degree of Novelty analysis
+#| label: degree-of-novelty-analysis
+
+## some notes:
+## Kattegat has years 1979-2013, missing 2007 and 2008
+## EBS has 1973-2015 with lots of gaps
+## GoR has 1979-2016 with fewer gaps than EBS
+benthos_abundance_novelty_list <- lapply(
+  1979:2008, FUN = function(x){
+    Novelty_function(
+      M = traitdf_gf_ra5yr,
+      start_baseline = x,
+      end_baseline = (x+4),
+      end_year = 2013,
+      method = "Hellinger"
+    )
+  }
+)
+names(benthos_abundance_novelty_list) <- 1979:2008
+benthos_abundance_novelty <- benthos_abundance_novelty_list |> 
+  bind_rows(.id = "Year") |> 
+  mutate(Year = as.numeric(Year))
+
+## just one level of staircase...
+# benthos_abundance_novelty <- Novelty_function(
+#   M = traitdf_bin5yr, 
+#   start_baseline = 1979, 
+#   end_baseline = 1983, 
+#   end_year = 2013, 
+#   method = "Hellinger"
+# )
+
+
+## RECALC NOVELTY -- use gapfilled 5 year Rolling average (gapfill with local trend or mean)
+
+```
+
+```{r plot degree of novelty}
+#| code-fold: true
+#| code-summary: Plot the Novelty, per Region
+#| label: plotting-novelty
+
+ggplot(benthos_abundance_novelty) + 
+  geom_tile(aes(x = TS.year, y = Year, fill = cma_dist), color = "black") +
+  scale_fill_viridis_c(option = "plasma", direction = -1) +
+  labs(x = NULL, y = "Baseline", fill = "Novelty") +
+  scale_x_continuous(
+    breaks = seq(1982, 2012, 2),
+    expand = c(0,0),
+    sec.axis = dup_axis()
+  ) +
+  scale_y_continuous(
+    breaks = seq(1983, 2013, 2),
+    expand = c(0,0),
+    sec.axis = dup_axis()
+  ) +
+  theme_bw() +
+  theme(
+    legend.key.height = unit(1.5,'cm'),
+    legend.key.width = unit(0.3,'cm'),
+    axis.text.x.top = element_blank(), 
+    axis.text.y.right = element_blank(), 
+    axis.title.x.top = element_blank(),
+    axis.title.y.right = element_blank()
+  ) +
+  facet_grid(cols = vars(TS.area))
+```
+
+```{r calculate rate of change}
+#| code-fold: true
+#| code-summary: Rate of Change
+#| label: rate-of-change
+
+## (distance dissimilarity calculation restricted to within-basin)
+benthos_change <- data.frame(matrix(
+  NA, nrow = 0, ncol = 8,
+  dimnames = list(NULL, c(
+    "Year", "cma_dist", "TS.ind", "FS.ind", 
+    "TS.area", "TS.year", "FS.area", "FS.year"
+  ))
+))
+for(i in unique(traitdf_gf_ra5yr$Area)){
+  data <- traitdf_gf_ra5yr[which(traitdf_gf_ra5yr$Area==i),]
+  
+  tmplst <- lapply(1979:2008, FUN = function(x){
+    Novelty_function(
+      M = data, 
+      start_baseline = x,
+      end_baseline = (x+4),
+      end_year = 2013, 
+      method = "Hellinger"
+    )
+  })
+  names(tmplst) <- 1979:2008
+  
+  benthos_change <- tmplst |> 
+    bind_rows(.id = "Year") |> 
+    rbind(benthos_change) |> 
+    mutate(Year = as.numeric(Year))
+}
+```
+
+```{r plot rate of change}
+#| code-fold: true
+#| code-summary: Plotting the Rates of Change
+#| label: rate-of-change-plot
+
+ggplot(benthos_change) + 
+  geom_tile(aes(x = TS.year, y = Year, fill = cma_dist), color = "black") +
+  scale_fill_viridis_c(option = "plasma", direction = -1) +
+  labs(x = NULL, y = "Baseline", fill = "Change") +
+  scale_x_continuous(
+    breaks = seq(1982, 2012, 2),
+    expand = c(0,0),
+    sec.axis = dup_axis()
+  ) +
+  scale_y_continuous(
+    breaks = seq(1983, 2013, 2),
+    expand = c(0,0),
+    sec.axis = dup_axis()
+  ) +
+  theme_bw() +
+  theme(
+    legend.key.height = unit(1.5,'cm'),
+    legend.key.width = unit(0.3,'cm'),
+    axis.text.x.top = element_blank(), 
+    axis.text.y.right = element_blank(), 
+    axis.title.x.top = element_blank(),
+    axis.title.y.right = element_blank()
+  ) +
+  facet_grid(cols = vars(TS.area))
+```

@@ -1,5 +1,5 @@
 
-setwd("/Users/yosrammar/Box Sync/PERSONAL/document_R_code/Paper4/")
+data_dir <- here::here("Untitled", "data")
 
 library(vegan)
 require(analogue)
@@ -178,7 +178,7 @@ Novelty_function <- function(M, start_baseline, end_baseline, end_year, n, metho
 
 #####things to change!
 
-path <-  "/Users/yosrammar/Box Sync/PERSONAL/document_R_code/comfort_Thorsten/"
+path <-  data_dir
 
 ##choose method for composition "Hellinger" or stock size ""EDlog"
 method= "Hellinger"
@@ -190,7 +190,7 @@ n=1
 
 
  ###phytoplankton   ######## 
-load(paste0(path,'phyto_class_mean_approx_5mean.Rdata')) ##phytoplankton mean value by class, with approximation to reduced NAs and a moving average of 5 years
+load(paste0(path,'/phyto_class_mean_approx_5mean.Rdata')) ##phytoplankton mean value by class, with approximation to reduced NAs and a moving average of 5 years
 phyto <- phyto_class_mean_approx_5mean
 colnames(phyto)[2] <- "helcom_id"
 colnames(phyto)[1] <- "year"
