@@ -4,7 +4,19 @@ format: html
 editor: visual
 ---
 
-## Set-up & Novelty Function
+## Introduction
+
+Thorsten and Marie will add ...
+
+write something about papers this is based on etc...
+
+Yosr et al 2021, Pecuchet et al 2019/2020, ...
+
+conceptual explanations....
+
+novelty in traits and novelty in species, interpretation of different cases
+
+plus using gams to attribute that to changes in environmental variables/drivers...
 
 ```{r libraries and directories}
 #| code-fold: true
@@ -13,7 +25,7 @@ editor: visual
 #| message: false
 
 ## libraries
-pkg <- c("here", "vegan", "analogue", "EnvCpt", "dplyr", "zoo", "ggplot2")
+pkg <- c("here","vegan","analogue","EnvCpt","FD","dplyr","tidyr","ggplot2","zoo")
 for(i in 1:length(pkg)){
   if(!(pkg[i] %in% installed.packages())){
     install.packages(pkg[i])
@@ -24,7 +36,7 @@ for(i in 1:length(pkg)){
 }
   
 ## file.paths
-data_dir <- here("files-from-Thorsten/data")
+data_dir <- here("data")
 save_dir <- here("output")
 ```
 
@@ -236,356 +248,324 @@ Novelty_function <- function(M, start_baseline, end_baseline, end_year, method){
 }
 ```
 
+```{r novelty staircase plotting function}
+#| code-fold: true
+#| code-summary: Staircase Plots of Novelty and Change
+#| label: novelty-staircase-plotting-function
+
+staircase_plot <- function(novelty_results){
+  mnYr <- min(novelty_results$Year)
+  mxYr <- max(novelty_results$Year)
+  
+  plot <- ggplot(novelty_results) + 
+    geom_tile(aes(x = TS.year, y = Year, fill = cma_dist), color = "black") +
+    scale_fill_viridis_c(option = "plasma", direction = -1) +
+    labs(x = NULL, y = "Baseline", fill = "Novelty") +
+    scale_x_continuous(
+      breaks = seq(mnYr-1, mxYr, 2),
+      expand = c(0,0),
+      sec.axis = dup_axis()
+    ) +
+    scale_y_continuous(
+      breaks = seq(mnYr, mxYr, 2),
+      expand = c(0,0),
+      sec.axis = dup_axis()
+    ) +
+    theme_bw() +
+    theme(
+      legend.key.height = unit(1.5,'cm'),
+      legend.key.width = unit(0.3,'cm'),
+      axis.text.x.top = element_blank(), 
+      axis.text.y.right = element_blank(), 
+      axis.title.x.top = element_blank(),
+      axis.title.y.right = element_blank()
+    ) +
+    facet_grid(cols = vars(TS.area))
+  
+  return(plot)
+}
+
+```
+
 ## Data
 
-```{r load data}
+```{r load cwm and species biomass}
 #| code-fold: true
-#| code-summary: Load Data
+#| code-summary: Load CWM and Species Biomass Data
 #| label: load-data
-df0 <- read.csv(file.path(data_dir, "Multitrophic_CWM_traits_BalticSea.csv"), sep = ";") 
-df <- df0 |> 
-  filter(Taxa == "Benthos", Variable == "abundance") |> 
-  select(Area, Year, Trait, Value) |> 
-  mutate(across(c("Year", "Value"), as.numeric))
+
+cwm_traits_data <- file.path(data_dir, "Multitrophic_CWM_traits_BalticSea.csv")
+biomass_data <- file.path(data_dir, "Pecuchet_BSsurvey.csv")
+
+df0_traits <- read.csv(cwm_traits_data)
+df0_biomass <- read.csv(biomass_data)
+
+## which years apply for (all) basin(s) being analyzed
+useYrs <- 1979:2016
+startYrs <- useYrs[5:length(useYrs)-5]
+useMinYr <- min(useYrs) - 1
 ```
 
-```{r 5-year bin averages}
+```{r wrangling phytoplankton traits}
 #| code-fold: true
-#| code-summary: Averages in 5-Year Bins
-#| label: averages-5-year-bins
+#| code-summary: Traits IDs and Definitions
+#| label: trait-ids-and-definitions
 
-## bins of 5 years from 1973-2013 
-## with 40 bins
-traitdf_bin5yr_long <- df |> 
-  filter(Year %in% 1979:2013) |> 
-  mutate(Bin = ceiling((Year-1978)/5)) |> 
-  group_by(Bin) |> 
-  mutate(maxYear = max(Year)) |> 
-  group_by(Bin, Area) |> 
-  mutate(nYears = n_distinct(Year)) |> 
-  group_by(Area, Trait, Bin) |> 
-  mutate(Value = mean(Value)) |> 
-  ungroup()
-traitdf_bin5yr_long$Trait <- factor(
-  traitdf_bin5yr_long$Trait,
-  levels = c(
-    "Lecitotrophic", "Epibenthic", "Planktotrophic",
-    "Deposit.feeder", "Suspension.feeder", "Scavenger", "Predator", 
-    "Size", "Direct.dvlpt", "Top", "Middle"
+phyto <- file.path(data_dir, "phytoplankton_trait_compilation_RiinaKlaiis.csv") |> 
+  read.csv() |> 
+  select(
+    valid_name, alpha_id = Aphia,
+    nfix, buoyancy = buoayncy, silica, motility, 
+    autotrophy, heterotrophy, fyco, chlc, chlb, chain
+  ) |> 
+  pivot_longer(cols = c(
+      nfix, buoyancy, silica, motility, 
+      autotrophy, heterotrophy, fyco, chlc, chlb, chain
+  )) |>
+  mutate(
+    spec_trait = name,
+    min = NA, max = NA, 
+    data_type = "cat",
+    trophic_level = "phytoplankton"
   )
-)
-## expand so have missing years filled with same 5-year bin average
-## in many cases 5-year bin averages are based on fewer than 5 values
-## because of missing data
-traitdf_bin5yr <- traitdf_bin5yr_long |> 
-  distinct(Area, Trait, maxYear, Value) |> 
-  rowwise() |> 
-  mutate(Year = list((maxYear-4):maxYear)) |> 
-  ungroup() |> 
-  tidyr::unnest(cols = c(Year)) |> 
-  tidyr::pivot_wider(names_from = "Trait", values_from = "Value")
+
+cbind(1:nrow(phyto) + 101)
+  
+  
 ```
 
-```{r 5-year bin averages plots}
+```{r functions to wrangle data}
 #| code-fold: true
-#| code-summary: Plot Timeseries of 5-Year Binned Data
-#| label: plot-binned-timeseries 
+#| code-summary: Function to Wrangle data 
+#| label: wrangling-data
 
-## this is to checking pattern of missing years
-ggplot(traitdf_bin5yr_long) + 
-  geom_point(
-    aes(x = Year, y = Value, color = Area),
-    shape = 95, size = 4) +
-  geom_point(
-    aes(x = Year, y = Value, color = Area),
-    size = 0.5, alpha = 0.5) +
-  geom_vline(aes(xintercept = maxYear), linewidth = 0.1) +
-  facet_wrap(~Trait, scales = "free_y", nrow = 4) +
-  theme(legend.position = c(0.8, 0.1)) + 
-  labs(x = "\nYear", y = "Abundance\nAverages in 5-Year Bins\n")
+## make a function because this will be done 8 times...
+## 4 taxa groups (benthos, fish, zooplankton, phytoplankton) 
+## 2 calculations, on traits and species biomass
+
+## useYrs and useMinYr defined above in load-data code chunk
+wrangle_data <- function(df0, metric, fun = c("bins5yr", "roll5yr", "gfroll5yr")){
+  
+  if(metric == "CWM"){
+    df <- df0 |> 
+      filter(Taxa == "Benthos", Variable == "abundance") |> 
+      select(Area, Year, Factor = Trait, Value) |> 
+      mutate(across(c("Year", "Value"), as.numeric))
+    
+    FactorLevels <- c(
+      "Lecitotrophic", "Epibenthic", "Planktotrophic",
+      "Deposit.feeder", "Suspension.feeder", "Scavenger", "Predator", 
+      "Size", "Direct.dvlpt", "Top", "Middle"
+    )
+    
+    if(fun == "gfroll5yr"){
+      complete_columns <- expand.grid(
+        Area = unique(df$Area), 
+        Factor = unique(df$Factor),
+        Year = useYrs
+      )
+      df <- complete_columns |> 
+        left_join(df, by = join_by(Area, Factor, Year))
+    }
+  }
+  # if(metric == "Biomass")
+  
+  if(fun == "bins5yr"){
+    ## 5-year bin averages
+    df_long <- df |> 
+      filter(Year %in% useYrs) |> 
+      mutate(Bin = ceiling((Year-useMinYr)/5)) |> 
+      group_by(Bin) |> 
+      mutate(maxYear = max(Year)) |> 
+      group_by(Bin, Area) |> 
+      mutate(nYears = n_distinct(Year)) |> 
+      group_by(Area, Factor, Bin) |> 
+      mutate(Value = mean(Value)) |> 
+      ungroup()
+    
+    df_long$Factor <- factor(
+      df_long$Factor,
+      levels = FactorLevels
+    )
+    
+    ## expand so have missing years filled with same 5-year bin average
+    ## in many cases 5-year bin averages are based on fewer than 5 values
+    ## because of missing data
+    df_short <- df_long |> 
+      distinct(Area, Factor, maxYear, Value) |> 
+      rowwise() |> 
+      mutate(Year = list((maxYear-4):maxYear)) |> 
+      ungroup() |> 
+      unnest(cols = c(Year)) |> 
+      pivot_wider(
+        names_from = "Factor", 
+        values_from = "Value"
+      )
+  }
+  
+  if(fun %in% c("roll5yr", "gfroll5yr")){
+    ## 5-year rolling means
+    df_long <- df |> 
+      arrange(Area, Factor, Year) |> 
+      group_by(Area, Factor) |> 
+      mutate(MinValue = rollapply(
+        Value, 5, min, 
+        fill = NA, 
+        align = "right",
+        na.rm = TRUE
+      )) |> 
+      mutate(MaxValue = rollmax(
+        Value, 5, fill = NA, 
+        align = "right", 
+        na.rm = TRUE
+      )) |> 
+      mutate(Value = rollmean(
+        Value, 5, fill = NA,
+        align = "right",
+        na.rm = TRUE
+      )) |> 
+      ## set abundance value rolling means less than zero to zero
+      ## (why are there means less than zero??)
+      mutate(Value = ifelse(Value > 0, Value, 0)) |> 
+      ungroup() |> 
+      filter(Year %in% useYrs[5:length(useYrs)]) |> 
+      mutate(Bin = ceiling((Year-useMinYr)/5)) |> 
+      group_by(Bin) |> 
+      mutate(maxYear = max(Year))
+    
+    df_long$Factor <- factor(
+      df_long$Factor,
+      levels = FactorLevels
+    )
+    
+    df_short <- df_long |> 
+      select(-MinValue, -MaxValue) |> 
+      pivot_wider(names_from = "Factor", values_from = "Value") |> 
+      ungroup()
+  }
+  
+  
+  ## plots of the data, to check missing data etc
+  p <- ggplot(df_long, aes(x = Year, y = Value, color = Area)) + 
+    geom_point(size = 0.5, alpha = 0.5) +
+    geom_vline(aes(xintercept = maxYear), linewidth = 0.1) +
+    facet_wrap(~Factor, scales = "free_y", nrow = 4) +
+    labs(x = "\nYear") +
+    theme(legend.position = "bottom")
+  
+  
+  if(fun == "bin5yr"){
+    p <- p + 
+      geom_point(shape = 95, size = 4) +
+      labs(y = paste(measure, "5-Year Bin Averages"))
+  }
+  if(fun == "roll5yr"){
+    p <- p + 
+      geom_line(linewidth = 0.2) +
+      labs(y = paste(metric, "5-Year Rolling Averages"))
+  }
+  if(fun == "gfroll5yr"){
+    p <- p + 
+      geom_line(linewidth = 0.2) +
+      labs(y = paste(metric, "Gapfilled 5-Year Rolling Averages"))
+  }
+  
+  ## return data and plot
+  ## long data only used to make plots,
+  ## short data used to do the novelty calculation
+  return(list(data = df_short, plot = p))
+}
 ```
 
-```{r 5-year rolling means}
+## Biotic Novelty – CWM Traits
+
+-   will use Biomass now, still using Hellinger distance
+
+-   testing just Gulf of Riga (so will effectively be just within-basin change/dissimilarities)
+
+-   will calculate the novelty for each species group individually
+
+-   then also calculate novelty for all species together, test whether method is sensitive enough
+
+```{r wrangle cwm traits data}
 #| code-fold: true
-#| code-summary: 5-Year Rolling Averages
-#| label: 5-year-rolling-averages
+#| code-summary: Wrangle Traits Data
+#| label: wrangle-cwm-traits-data
 
-## 5 year rolling mean
-traitdf_ra5yr_long <- df |> 
-  arrange(Area, Trait, Year) |> 
-  group_by(Area, Trait) |> 
-  mutate(MinValue = zoo::rollapply(Value, 5, min, fill = NA, align = "right", na.rm = TRUE)) |> 
-  mutate(MaxValue = zoo::rollmax(Value, 5, fill = NA, align = "right", na.rm = TRUE)) |> 
-  mutate(Value = zoo::rollmean(Value, 5, fill = NA, align = "right", na.rm = TRUE)) |> 
-  ## set abundance value rolling means less than zero to zero
-  mutate(Value = ifelse(Value > 0, Value, 0)) |> 
-  ungroup() |> 
-  dplyr::filter(Year %in% 1983:2013) |> 
-  mutate(Bin = ceiling((Year-1978)/5)) |> 
-  group_by(Bin) |> 
-  mutate(maxYear = max(Year))
-traitdf_ra5yr_long$Trait <- factor(
-  traitdf_ra5yr_long$Trait,
-  levels = c(
-    "Lecitotrophic", "Epibenthic", "Planktotrophic",
-    "Deposit.feeder", "Suspension.feeder", "Scavenger", "Predator", 
-    "Size", "Direct.dvlpt", "Top", "Middle"
-  )
-)
-
-traitdf_ra5yr <- traitdf_ra5yr_long |> 
-  select(-MinValue, -MaxValue) |> 
-  tidyr::pivot_wider(names_from = "Trait", values_from = "Value") |> 
-  ungroup()
+df_traits <- wrangle_data(df0_traits, metric = "CWM", fun = "gfroll5yr")
+df_traits$plot
 ```
 
-```{r 5-year rolling means plots}
+```{r benthos traits novelty}
 #| code-fold: true
-#| code-summary: Plot the 5-Year Rolling Averages
-#| label: plot-the-rolling-mean
-
-## plot with same 5 year divisions as in binned plot above
-ggplot(traitdf_ra5yr_long) + 
-  geom_line(
-    aes(x = Year, y = Value, color = Area),
-    linewidth = 0.2) +
-  geom_point(
-    aes(x = Year, y = Value, color = Area),
-    size = 0.5, alpha = 0.5) +
-  geom_vline(aes(xintercept = maxYear), linewidth = 0.1) +
-  facet_wrap(~Trait, scales = "free_y", nrow = 4) +
-  theme(legend.position = c(0.8, 0.1)) + 
-  labs(x = "\nYear", y = "Abundance\n5-Year Rolling Means\n")
-```
-
-```{r 5-year rolling means gapfilled}
-#| code-fold: true
-#| code-summary: 5-Year Rolling Averages with Gapfilling
-#| label: 5-year-rolling-averages-gapfilled
-
-## 5 year rolling mean, with gap-filling for missing years
-traitdf_gf_ra5yr_long <- df |> 
-  ## GAPFILLING
-  tidyr::complete(Area, Trait, Year) |> 
-  ## ROLLING MEAN
-  arrange(Area, Trait, Year) |> 
-  group_by(Area, Trait) |> 
-  mutate(MinValue = zoo::rollapply(Value, 5, min, fill = NA, align = "right", na.rm = TRUE)) |> 
-  mutate(MaxValue = zoo::rollapply(Value, 5, max, fill = NA, align = "right", na.rm = TRUE)) |> 
-  mutate(Value = zoo::rollmean(Value, 5, fill = NA, align = "right", na.rm = TRUE)) |> 
-  ## set abundance value rolling means less than zero to zero
-  mutate(Value = ifelse(Value > 0, Value, 0)) |> 
-  ungroup() |> 
-  dplyr::filter(Year %in% 1983:2013) |> 
-  mutate(Bin = ceiling((Year-1978)/5)) |> 
-  group_by(Bin) |> 
-  mutate(maxYear = max(Year))
-traitdf_gf_ra5yr_long$Trait <- factor(
-  traitdf_gf_ra5yr_long$Trait,
-  levels = c(
-    "Lecitotrophic", "Epibenthic", "Planktotrophic",
-    "Deposit.feeder", "Suspension.feeder", "Scavenger", "Predator", 
-    "Size", "Direct.dvlpt", "Top", "Middle"
-  )
-)
-
-traitdf_gf_ra5yr <- traitdf_gf_ra5yr_long |> 
-  select(-MinValue, -MaxValue) |> 
-  tidyr::pivot_wider(names_from = "Trait", values_from = "Value") |> 
-  ungroup()
-```
-
-```{r 5-year rolling means gapfilled plots}
-#| code-fold: true
-#| code-summary: Plot the 5-Year Rolling Averages with Gapfilling
-#| label: plot-the-gapfilled-rolling-mean
-
-## plot with same 5 year divisions as in binned plot above
-ggplot(traitdf_gf_ra5yr_long) + 
-  geom_line(
-    aes(x = Year, y = Value, color = Area),
-    linewidth = 0.2) +
-  geom_point(
-    aes(x = Year, y = Value, color = Area),
-    size = 0.5, alpha = 0.5) +
-  geom_vline(aes(xintercept = maxYear), linewidth = 0.1) +
-  facet_wrap(~Trait, scales = "free_y", nrow = 4) +
-  theme(legend.position = c(0.8, 0.1)) + 
-  labs(x = "\nYear", y = "Abundance\n5-Year Gap-Filled Rolling Means\n")
-```
-
-```{r original data plot}
-#| code-fold: true
-#| code-summary: Plot Original Data, overlaying 5-Year Rolling Min-Max-Means
-#| label: plot-origina-timeseries 
-dfPlot <- df
-dfPlot$Trait <- factor(
-  dfPlot$Trait,
-  levels = c(
-    "Lecitotrophic", "Epibenthic", "Planktotrophic",
-    "Deposit.feeder", "Suspension.feeder", "Scavenger", "Predator", 
-    "Size", "Direct.dvlpt", "Top", "Middle"
-  )
-)
-
-ggplot() + 
-  geom_ribbon(
-    data = traitdf_gf_ra5yr_long,
-    aes(x = Year, ymin = MinValue, ymax = MaxValue, fill = Area),
-    alpha = 0.25) +
-  geom_line(
-    data = traitdf_gf_ra5yr_long,
-    aes(x = Year, y = Value, color = Area),
-    linewidth = 0.2) +
-  geom_point(
-    data = dfPlot,
-    aes(x = Year, y = Value, color = Area),
-    size = 0.8, alpha = 0.8) +
-  geom_vline(
-    data = traitdf_gf_ra5yr_long,
-    aes(xintercept = maxYear), 
-    linewidth = 0.1) +
-  facet_wrap(~Trait, scales = "free_y", nrow = 4) +
-  theme(legend.position = c(0.8, 0.1)) + 
-  labs(x = "\nYear", y = "Abundance\nOriginal Data\n")
-```
-
-
-## Calculate Novelty and Rate of Change
-
-Example calculation, of (1) Hellinger-distance and (2) Rate of Change, with the 3 spatial regions, Benthos traits, and Abundance data (biomass has too many NAs)
-
-```{r calculate degree of novelty}
-#| code-fold: true
-#| code-summary: Degree of Novelty analysis
-#| label: degree-of-novelty-analysis
+#| code-summary: Degree of Novelty on Benthos Traits
+#| label: degree-of-novelty-benthos-traits
 
 ## some notes:
 ## Kattegat has years 1979-2013, missing 2007 and 2008
 ## EBS has 1973-2015 with lots of gaps
 ## GoR has 1979-2016 with fewer gaps than EBS
-benthos_abundance_novelty_list <- lapply(
-  1979:2008, FUN = function(x){
+benthos_traits_novelty_list <- lapply(
+  startYrs, FUN = function(x){
     Novelty_function(
-      M = traitdf_gf_ra5yr,
+      M = df_traits$data,
       start_baseline = x,
       end_baseline = (x+4),
-      end_year = 2013,
+      end_year = max(useYrs),
       method = "Hellinger"
     )
   }
 )
-names(benthos_abundance_novelty_list) <- 1979:2008
-benthos_abundance_novelty <- benthos_abundance_novelty_list |> 
+names(benthos_traits_novelty_list) <- startYrs
+benthos_traits_novelty <- benthos_traits_novelty_list |> 
   bind_rows(.id = "Year") |> 
   mutate(Year = as.numeric(Year))
 
-## just one level of staircase...
-# benthos_abundance_novelty <- Novelty_function(
-#   M = traitdf_bin5yr, 
-#   start_baseline = 1979, 
-#   end_baseline = 1983, 
-#   end_year = 2013, 
-#   method = "Hellinger"
-# )
-
-
-## RECALC NOVELTY -- use gapfilled 5 year Rolling average (gapfill with local trend or mean)
-
+## staircase plot of novelty
+staircase_plot(benthos_traits_novelty)
 ```
 
-```{r plot degree of novelty}
-#| code-fold: true
-#| code-summary: Plot the Novelty, per Region
-#| label: plotting-novelty
-
-ggplot(benthos_abundance_novelty) + 
-  geom_tile(aes(x = TS.year, y = Year, fill = cma_dist), color = "black") +
-  scale_fill_viridis_c(option = "plasma", direction = -1) +
-  labs(x = NULL, y = "Baseline", fill = "Novelty") +
-  scale_x_continuous(
-    breaks = seq(1982, 2012, 2),
-    expand = c(0,0),
-    sec.axis = dup_axis()
-  ) +
-  scale_y_continuous(
-    breaks = seq(1983, 2013, 2),
-    expand = c(0,0),
-    sec.axis = dup_axis()
-  ) +
-  theme_bw() +
-  theme(
-    legend.key.height = unit(1.5,'cm'),
-    legend.key.width = unit(0.3,'cm'),
-    axis.text.x.top = element_blank(), 
-    axis.text.y.right = element_blank(), 
-    axis.title.x.top = element_blank(),
-    axis.title.y.right = element_blank()
-  ) +
-  facet_grid(cols = vars(TS.area))
-```
-
-```{r calculate rate of change}
+```{r benthos traits within basin change}
 #| code-fold: true
 #| code-summary: Rate of Change
-#| label: rate-of-change
+#| label: benthos-trait-within-basin-change
 
 ## (distance dissimilarity calculation restricted to within-basin)
-benthos_change <- data.frame(matrix(
+benthos_traits_change <- data.frame(matrix(
   NA, nrow = 0, ncol = 8,
   dimnames = list(NULL, c(
     "Year", "cma_dist", "TS.ind", "FS.ind", 
     "TS.area", "TS.year", "FS.area", "FS.year"
   ))
 ))
-for(i in unique(traitdf_gf_ra5yr$Area)){
-  data <- traitdf_gf_ra5yr[which(traitdf_gf_ra5yr$Area==i),]
+for(i in unique(df_traits$data$Area)){
+  data <- df_traits$data[which(df_traits$data$Area==i),]
   
-  tmplst <- lapply(1979:2008, FUN = function(x){
+  tmplst <- lapply(startYrs, FUN = function(x){
     Novelty_function(
       M = data, 
       start_baseline = x,
       end_baseline = (x+4),
-      end_year = 2013, 
+      end_year = max(useYrs), 
       method = "Hellinger"
     )
   })
-  names(tmplst) <- 1979:2008
+  names(tmplst) <- startYrs
   
-  benthos_change <- tmplst |> 
+  benthos_traits_change <- tmplst |> 
     bind_rows(.id = "Year") |> 
-    rbind(benthos_change) |> 
+    rbind(benthos_traits_change) |> 
     mutate(Year = as.numeric(Year))
 }
+staircase_plot(benthos_traits_change)
 ```
 
-```{r plot rate of change}
-#| code-fold: true
-#| code-summary: Plotting the Rates of Change
-#| label: rate-of-change-plot
+## Biotic Novelty – Species Biomass
 
-ggplot(benthos_change) + 
-  geom_tile(aes(x = TS.year, y = Year, fill = cma_dist), color = "black") +
-  scale_fill_viridis_c(option = "plasma", direction = -1) +
-  labs(x = NULL, y = "Baseline", fill = "Change") +
-  scale_x_continuous(
-    breaks = seq(1982, 2012, 2),
-    expand = c(0,0),
-    sec.axis = dup_axis()
-  ) +
-  scale_y_continuous(
-    breaks = seq(1983, 2013, 2),
-    expand = c(0,0),
-    sec.axis = dup_axis()
-  ) +
-  theme_bw() +
-  theme(
-    legend.key.height = unit(1.5,'cm'),
-    legend.key.width = unit(0.3,'cm'),
-    axis.text.x.top = element_blank(), 
-    axis.text.y.right = element_blank(), 
-    axis.title.x.top = element_blank(),
-    axis.title.y.right = element_blank()
-  ) +
-  facet_grid(cols = vars(TS.area))
+in order to test for the difference between the trait and species approach...
+
+e.g. is the Kattegat showing little trait-novelty because of redundancy in species, but higher species composition novelty??
+
+```{r novelty of species compositions using species biomass data}
+
 ```
