@@ -123,6 +123,7 @@ Novelty_function <- function(M, start_baseline, end_baseline, end_year, method){
           for(i in 1:ncol(S.a)){
             for(j in 1:nrow(S.a)){
               S.a2[j,i] <- S.a[j,i]/rowSums(S.a[j,])
+              ## why do we normalize by row sum instead of global max sum??
             }
           }
           S.a2[which(rowSums(TS.a) == FALSE),] <- 0 ## when would rowSums be false??
@@ -262,7 +263,7 @@ staircase_plot <- function(novelty_results){
     scale_fill_viridis_c(option = "plasma", direction = -1) +
     labs(x = NULL, y = "Baseline", fill = "Novelty") +
     scale_x_continuous(
-      breaks = seq(mnYr-1, mxYr, 2),
+      breaks = seq(mnYr, mxYr+4, 2),
       expand = c(0,0),
       sec.axis = dup_axis()
     ) +
@@ -295,43 +296,81 @@ staircase_plot <- function(novelty_results){
 #| label: load-data
 
 cwm_traits_data <- file.path(data_dir, "Multitrophic_CWM_traits_BalticSea.csv")
+## note: these biomass data are survey/observation data
+## may need to do some modeling to get better picture of actual spp biomasses
+## (undersampling bias?)
+biomass_data0 <- file.path(data_dir, "Pecuchet_Surveys_BS0.csv")
 biomass_data <- file.path(data_dir, "Pecuchet_BSsurvey.csv")
 
-df0_traits <- read.csv(cwm_traits_data)
-df0_biomass <- read.csv(biomass_data)
+if(!file.exists(biomass_data)){
+  library(stringr)
+  
+  ## read with quotation marks to be able to distinguish columns
+  tmp <- read.table(biomass_data0, header = TRUE, sep = "\t", quote = "")
+  colnames(tmp) <- "allsquashedtogether"
+  
+  tmp2 <- tmp |> 
+    rowwise() |> 
+    ## put NAs in quotes so can split
+    mutate(allsquashedtogether = str_replace_all(
+      allsquashedtogether, "NA", "\"NA\""
+    )) |> 
+    mutate(spl1 = str_split(allsquashedtogether, "\"\\s")) |> 
+    mutate(spl2 = ifelse(
+      str_detect(spl1[6], "^[0-9]{2}\\.[0-9]+"),
+      paste(spl1[6], spl1[7], spl1[8]),
+      paste(spl1[6], spl1[7], spl1[8], spl1[9], spl1[10], spl1[11])
+    )) |> 
+    mutate(spl2 = str_split(spl2, "\\s")) |> 
+    ## extract information for the columns we want
+    ## hope its all correct...
+    mutate(
+      Survey = spl1[3],
+      Area = spl1[4],
+      SD = spl1[5],
+      lat = spl2[1],
+      lon = spl2[2],
+      Depth = spl2[3],
+      Year = spl2[4],
+      Month = spl2[5],
+      Taxa = spl2[6],
+      Abundance = spl2[7],
+      Biomass = spl2[8],
+      AphiaID_accepted = spl2[9],
+      ScientificName_accepted = spl1[length(spl1)-6]
+    )
+  tmp3 <- tmp2 |> 
+    ungroup() |> 
+    select(
+      Survey, Area, SD, Taxa, AphiaID_accepted, ScientificName_accepted,
+      lat, lon, Depth, Year, Month, Abundance, Biomass
+    ) |> 
+    mutate(across(1:13,  ~str_remove_all(.x, "\""))) |> 
+    mutate(across(1:13, ~ifelse(.x == "NA", NA, .x))) |> 
+    mutate(across(7:13, ~as.numeric(.x)))
+  
+  # ggplot(filter(tmp3, !is.na(Biomass), !Taxa == "Benthos_severalst")) + 
+  #  geom_bar(aes(x = Year, fill = Area), position = position_stack()) + 
+  #  facet_wrap(~Taxa, scales = "free_y")
+    
+  ## save as a standard csv file
+  write.csv(tmp3, biomass_data)
+}
+
+## for now we just use Gulf of Riga
+df0_traits <- read.csv(cwm_traits_data) |> 
+  filter(Area == "GoR")
+df0_biomass <- read.csv(biomass_data) |> 
+  ## many Benthos and Phytoplankton rows at top of table lack Species info!!
+  filter(!is.na(ScientificName_accepted)) |> 
+  filter(Area %in% c("43H4","46H1","44H2","44H3","45H2","45H3","Gulf_Riga",NA)) |> 
+  filter(lon > 20) |> 
+  mutate(Area = "GoR")
 
 ## which years apply for (all) basin(s) being analyzed
 useYrs <- 1979:2016
 startYrs <- useYrs[5:length(useYrs)-5]
 useMinYr <- min(useYrs) - 1
-```
-
-```{r wrangling phytoplankton traits}
-#| code-fold: true
-#| code-summary: Traits IDs and Definitions
-#| label: trait-ids-and-definitions
-
-phyto <- file.path(data_dir, "phytoplankton_trait_compilation_RiinaKlaiis.csv") |> 
-  read.csv() |> 
-  select(
-    valid_name, alpha_id = Aphia,
-    nfix, buoyancy = buoayncy, silica, motility, 
-    autotrophy, heterotrophy, fyco, chlc, chlb, chain
-  ) |> 
-  pivot_longer(cols = c(
-      nfix, buoyancy, silica, motility, 
-      autotrophy, heterotrophy, fyco, chlc, chlb, chain
-  )) |>
-  mutate(
-    spec_trait = name,
-    min = NA, max = NA, 
-    data_type = "cat",
-    trophic_level = "phytoplankton"
-  )
-
-cbind(1:nrow(phyto) + 101)
-  
-  
 ```
 
 ```{r functions to wrangle data}
@@ -344,49 +383,81 @@ cbind(1:nrow(phyto) + 101)
 ## 2 calculations, on traits and species biomass
 
 ## useYrs and useMinYr defined above in load-data code chunk
-wrangle_data <- function(df0, metric, fun = c("bins5yr", "roll5yr", "gfroll5yr")){
-  
-  if(metric == "CWM"){
-    df <- df0 |> 
-      filter(Taxa == "Benthos", Variable == "abundance") |> 
-      select(Area, Year, Factor = Trait, Value) |> 
-      mutate(across(c("Year", "Value"), as.numeric))
-    
-    FactorLevels <- c(
-      "Lecitotrophic", "Epibenthic", "Planktotrophic",
-      "Deposit.feeder", "Suspension.feeder", "Scavenger", "Predator", 
-      "Size", "Direct.dvlpt", "Top", "Middle"
-    )
-    
-    if(fun == "gfroll5yr"){
-      complete_columns <- expand.grid(
-        Area = unique(df$Area), 
-        Factor = unique(df$Factor),
-        Year = useYrs
-      )
-      df <- complete_columns |> 
-        left_join(df, by = join_by(Area, Factor, Year))
+## function to fill NA using linear trend
+fill_trend <- function(x, idx){
+  res <- x[idx]
+  if(is.na(res)){
+    not_na <- which(!is.na(x))
+    if(length(not_na) >= 2){
+      x <- x[not_na]
+      res <- predict(lm(x ~ not_na), data.frame(not_na = idx))[[1]]
     }
   }
-  # if(metric == "Biomass")
+  return(res)
+}
+
+## four options for fun argument:
+## bins5yr will create discrete bins, so data looks like steps with 5yr width
+## roll5yr will take rolling mean across all values, filling in NAs in 5yr window
+## gfroll5yr replaces (not necessarily all) NAs with a value from rolling mean
+## gftrend replaces only (not all) NAs with value from (5yr window) lm-trend
+wrangle_data <- function(df0, x, taxa, fun){
+  ## CWM option is for traits/ functional novelty analysis
+  ## Biomass dataset is surveys (later change to pre-processed/modeled data...?)
+  if(x == "CWM"){
+    df <- df0 |> 
+      filter(Taxa %in% taxa) |> 
+      select(Area, Year, Factor = Trait, Value) |> 
+      mutate(across(c("Year", "Value"), as.numeric))
+  }
+  if(x == "Biomass"){
+    df <- df0 |> 
+      filter(Taxa == taxa) |>
+      group_by(Area, Year, Month, ScientificName_accepted) |> 
+      ## what to do about depths?
+      ## at this point we just take per month averages over depths
+      summarize(Value = mean(Biomass, na.rm = TRUE)) |> 
+      rename(Factor = ScientificName_accepted) 
+  }
   
   if(fun == "bins5yr"){
     ## 5-year bin averages
-    df_long <- df |> 
+    df_yrs <- df |> 
       filter(Year %in% useYrs) |> 
       mutate(Bin = ceiling((Year-useMinYr)/5)) |> 
       group_by(Bin) |> 
       mutate(maxYear = max(Year)) |> 
       group_by(Bin, Area) |> 
-      mutate(nYears = n_distinct(Year)) |> 
+      mutate(nYears = n_distinct(Year))
+
+    if("Month" %in% names(df_yrs)){
+      ## if multiple months, which to use...
+      ## pick the month(s) most often occuring across year-bins??
+      # df_yrs <- df_yrs |>
+      #   group_by(Area, Factor, Month) |>
+      #   mutate(nBins = n_distinct(Bin)) |>
+      #   group_by(Area, Factor) |>
+      #   mutate(mooMonth = nBins == max(nBins)) |>
+      #   ungroup() |>
+      #   filter(mooMonth) |>
+      #   mutate(Factor = paste(Factor, Month))
+      if(taxa %in% c("Phytoplankton", "Zooplankton")){
+        df_yrs <- df_yrs |>
+          mutate(Factor = case_when(
+            Month %in% 3:5 ~ paste(Factor, "- Spring"),
+            Month %in% 6:8 ~ paste(Factor, "- Summer"),
+            Month %in% 9:11 ~ paste(Factor, "- Autumn")
+          ))
+      }
+    }
+    df_long <- df_yrs |> 
+      select(Area, Factor, Bin, Year, maxYear, Value) |> 
+      arrange(Area, Factor, Bin) |> 
       group_by(Area, Factor, Bin) |> 
       mutate(Value = mean(Value)) |> 
       ungroup()
-    
-    df_long$Factor <- factor(
-      df_long$Factor,
-      levels = FactorLevels
-    )
+    FactorLevels <- unique(df_long$Factor)
+    df_long$Factor <- factor(df_long$Factor, levels = FactorLevels)
     
     ## expand so have missing years filled with same 5-year bin average
     ## in many cases 5-year bin averages are based on fewer than 5 values
@@ -394,6 +465,12 @@ wrangle_data <- function(df0, metric, fun = c("bins5yr", "roll5yr", "gfroll5yr")
     df_short <- df_long |> 
       distinct(Area, Factor, maxYear, Value) |> 
       rowwise() |> 
+      ## bc year list only works if nyears is mod5...
+      mutate(maxYear = ifelse(
+        maxYear == max(df$Year),
+        maxYear + diff(range(df$Year)) %% 5 - 1,
+        maxYear
+      )) |> 
       mutate(Year = list((maxYear-4):maxYear)) |> 
       ungroup() |> 
       unnest(cols = c(Year)) |> 
@@ -403,27 +480,83 @@ wrangle_data <- function(df0, metric, fun = c("bins5yr", "roll5yr", "gfroll5yr")
       )
   }
   
-  if(fun %in% c("roll5yr", "gfroll5yr")){
-    ## 5-year rolling means
-    df_long <- df |> 
+  if(fun %in% c("roll5yr", "gfroll5yr", "gftrend")){
+    if("Month" %in% names(df)){
+      ## if multiple months, which to use...
+      ## pick the month(s) most often occuring across all years
+      # df <- df |>
+      #   group_by(Area, Factor, Month) |>
+      #   mutate(nYrs = ifelse(is.na(Month), 0, n_distinct(Year))) |>
+      #   group_by(Area, Factor) |>
+      #   mutate(mooMonth = nYrs == max(nYrs)) |>
+      #   ungroup() |>
+      #   filter(mooMonth)
+      if(taxa %in% c("Phytoplankton", "Zooplankton")){
+        df <- df |>
+          mutate(Factor = case_when(
+            Month %in% 3:5 ~ paste(Factor, "- Spring"),
+            Month %in% 6:8 ~ paste(Factor, "- Summer"),
+            Month %in% 9:11 ~ paste(Factor, "- Autumn")
+          ))
+      }
+    }
+    FactorLevels <- unique(df$Factor)
+    allYrs <- seq(min(df$Year), max(df$Year))
+    
+    df <- expand.grid(Area=unique(df$Area), Factor=FactorLevels, Year=allYrs) |> 
+      left_join(df, by = join_by(Area, Factor, Year)) |>
+      group_by(Area, Factor, Year) |> 
+      summarize(Value = mean(Value, na.rm = TRUE)) |> 
       arrange(Area, Factor, Year) |> 
-      group_by(Area, Factor) |> 
-      mutate(MinValue = rollapply(
-        Value, 5, min, 
-        fill = NA, 
-        align = "right",
-        na.rm = TRUE
-      )) |> 
-      mutate(MaxValue = rollmax(
-        Value, 5, fill = NA, 
-        align = "right", 
-        na.rm = TRUE
-      )) |> 
-      mutate(Value = rollmean(
-        Value, 5, fill = NA,
-        align = "right",
-        na.rm = TRUE
-      )) |> 
+      group_by(Area, Factor)
+  
+    ## 5-year rolling means
+    ## CWM data are already rolling means so should only fill with trend???
+    if(fun == "roll5yr"){
+      df_long <- df |> 
+        mutate(Value = rollmean(
+          Value, 5, fill = NA,
+          align = "right",
+          na.rm = TRUE
+        )) 
+    }
+    if(fun == "gfroll5yr"){
+      df_long <- df |> 
+        mutate(meanFill = rollmean(
+          Value, 5, fill = NA,
+          align = "right",
+          na.rm = TRUE
+        )) |> 
+        mutate(Value = ifelse(
+          is.na(Value), 
+          meanFill, Value
+        ))
+    }
+    if(fun == "gftrend"){
+      df_long <- df |> 
+        mutate(trendFill = rollapply(
+          Value, 5, fill = NA,
+          FUN = function(x){fill_trend(x, 3)},
+          align = "center"
+        )) |> 
+        ## if still have NAs, add right aligned trend...
+        mutate(trendFill2 = rollapply(
+          Value, 5, fill = NA,
+          FUN = function(x){fill_trend(x, 5)},
+          align = "right"
+        )) |> 
+        mutate(Value = ifelse(
+          is.na(Value), 
+          trendFill, Value
+        )) |> 
+        mutate(Value = ifelse(
+          is.na(Value),
+          trendFill2, Value
+        ))
+    }
+    df_long <- df_long |> 
+      filter(Year %in% useYrs) |> 
+      select(Area, Factor, Year, Value) |> 
       ## set abundance value rolling means less than zero to zero
       ## (why are there means less than zero??)
       mutate(Value = ifelse(Value > 0, Value, 0)) |> 
@@ -433,17 +566,13 @@ wrangle_data <- function(df0, metric, fun = c("bins5yr", "roll5yr", "gfroll5yr")
       group_by(Bin) |> 
       mutate(maxYear = max(Year))
     
-    df_long$Factor <- factor(
-      df_long$Factor,
-      levels = FactorLevels
-    )
+    df_long$Factor <- factor(df_long$Factor, levels = FactorLevels)
     
     df_short <- df_long |> 
-      select(-MinValue, -MaxValue) |> 
       pivot_wider(names_from = "Factor", values_from = "Value") |> 
       ungroup()
   }
-  
+  # View(sort(colSums(is.na(df_short))))
   
   ## plots of the data, to check missing data etc
   p <- ggplot(df_long, aes(x = Year, y = Value, color = Area)) + 
@@ -453,21 +582,20 @@ wrangle_data <- function(df0, metric, fun = c("bins5yr", "roll5yr", "gfroll5yr")
     labs(x = "\nYear") +
     theme(legend.position = "bottom")
   
-  
   if(fun == "bin5yr"){
     p <- p + 
       geom_point(shape = 95, size = 4) +
-      labs(y = paste(measure, "5-Year Bin Averages"))
-  }
-  if(fun == "roll5yr"){
-    p <- p + 
-      geom_line(linewidth = 0.2) +
-      labs(y = paste(metric, "5-Year Rolling Averages"))
+      labs(y = paste(x, "5-Year Bin Averages"))
   }
   if(fun == "gfroll5yr"){
     p <- p + 
       geom_line(linewidth = 0.2) +
-      labs(y = paste(metric, "Gapfilled 5-Year Rolling Averages"))
+      labs(y = paste(x, "Gapfilled 5-Year Rolling Averages"))
+  }
+  if(fun == "gftrend"){
+    p <- p + 
+      geom_line(linewidth = 0.2) + 
+      labs(y = paste(x, "Gapfilled with 5-Year Window Trend"))
   }
   
   ## return data and plot
@@ -492,20 +620,27 @@ wrangle_data <- function(df0, metric, fun = c("bins5yr", "roll5yr", "gfroll5yr")
 #| code-summary: Wrangle Traits Data
 #| label: wrangle-cwm-traits-data
 
-df_traits <- wrangle_data(df0_traits, metric = "CWM", fun = "gfroll5yr")
+AllTaxa <- c("Phytoplankton", "Zooplankton", "Benthos", "Fish")
+
+df_traits <- df0_traits |> 
+  filter(Variable == "biomass") |> 
+  # filter(Variable == "abundance") |> 
+  wrangle_data("CWM", "Phytoplankton", "gftrend")
+  # wrangle_data("CWM", "Zooplankton", "gftrend")
+  # wrangle_data("CWM", "Benthos", "gftrend")
+  # wrangle_data("CWM", "Fish", "gftrend")
+  # wrangle_data("CWM", AllTaxa, "gftrend")
+
+# View(df_traits$data)
 df_traits$plot
 ```
 
-```{r benthos traits novelty}
+```{r degree of novelty traits}
 #| code-fold: true
-#| code-summary: Degree of Novelty on Benthos Traits
-#| label: degree-of-novelty-benthos-traits
+#| code-summary: Degree of Novelty in Traits
+#| label: degree-of-novelty-traits
 
-## some notes:
-## Kattegat has years 1979-2013, missing 2007 and 2008
-## EBS has 1973-2015 with lots of gaps
-## GoR has 1979-2016 with fewer gaps than EBS
-benthos_traits_novelty_list <- lapply(
+traits_novelty_list <- lapply(
   startYrs, FUN = function(x){
     Novelty_function(
       M = df_traits$data,
@@ -516,22 +651,22 @@ benthos_traits_novelty_list <- lapply(
     )
   }
 )
-names(benthos_traits_novelty_list) <- startYrs
-benthos_traits_novelty <- benthos_traits_novelty_list |> 
+names(traits_novelty_list) <- startYrs
+traits_novelty <- traits_novelty_list |> 
   bind_rows(.id = "Year") |> 
   mutate(Year = as.numeric(Year))
 
 ## staircase plot of novelty
-staircase_plot(benthos_traits_novelty)
+staircase_plot(traits_novelty)
 ```
 
-```{r benthos traits within basin change}
+```{r within basin traits change}
 #| code-fold: true
 #| code-summary: Rate of Change
-#| label: benthos-trait-within-basin-change
+#| label: within-basin-traits-change
 
 ## (distance dissimilarity calculation restricted to within-basin)
-benthos_traits_change <- data.frame(matrix(
+traits_change <- data.frame(matrix(
   NA, nrow = 0, ncol = 8,
   dimnames = list(NULL, c(
     "Year", "cma_dist", "TS.ind", "FS.ind", 
@@ -552,20 +687,73 @@ for(i in unique(df_traits$data$Area)){
   })
   names(tmplst) <- startYrs
   
-  benthos_traits_change <- tmplst |> 
+  traits_change <- tmplst |> 
     bind_rows(.id = "Year") |> 
-    rbind(benthos_traits_change) |> 
+    rbind(traits_change) |> 
     mutate(Year = as.numeric(Year))
 }
-staircase_plot(benthos_traits_change)
+staircase_plot(traits_change)
 ```
 
 ## Biotic Novelty – Species Biomass
 
-in order to test for the difference between the trait and species approach...
+-   in order to test for the difference between shifts in traits versus species, e.g. is the basin showing little trait-novelty because of redundancy in species, but higher species composition novelty?
 
-e.g. is the Kattegat showing little trait-novelty because of redundancy in species, but higher species composition novelty??
+-   currently using survey data but may want to use modeled data to e.g. correct for undersampling bias, distinguish explicitly between NAs and zeros, etc.
 
-```{r novelty of species compositions using species biomass data}
+-   for taxa with strong seasonality (plankton), spring and fall may be considered as separate factors in the novelty dissimilarity calculation, but for others we will use an annual average
 
+```{r wrangle species compositions biomass data}
+#| code-fold: true
+#| code-summary: Wrangle Species Data
+#| label: wrangle-species-data
+
+
+df_spp <- df0_biomass |> 
+  ## better to use roll5yr rather than just gfroll5yr??
+  # wrangle_data("Biomass", "Phytoplankton", "gfroll5yr")
+  wrangle_data("Biomass", "Zooplankton", "gfroll5yr")
+  # wrangle_data("Biomass", "Benthos", "gfroll5yr")
+  # wrangle_data("Biomass", "Fish", "gfroll5yr")
+
+cs <- colSums(is.na(df_spp$data))
+df_spp$data <- select(df_spp$data, all_of(names(cs[which(cs == 0)])))
+
+## lots of phytoplankton species, maybe don't keep the less common ones??
+# cs <- colSums(select(df_spp$data, matches("Spring|Summer")))
+# df_spp$data <- df_spp$data |> 
+#   select(
+#     Area, Year, Bin, maxYear,
+#     all_of(names(cs[which(cs > 0.1)]))
+#   )
+
+# View(df_spp$data)
+# df_spp$plot
+```
+
+```{r degree of novelty species}
+#| code-fold: true
+#| code-summary: Degree of Novelty in Species
+#| label: degree-of-novelty-species
+
+## note: avoid running for phytoplankton 
+## with the about 200species it takes forever...
+traits_novelty_list <- lapply(
+  startYrs, FUN = function(x){
+    Novelty_function(
+      M = df_spp$data,
+      start_baseline = x,
+      end_baseline = (x+4),
+      end_year = max(useYrs),
+      method = "Hellinger"
+    )
+  }
+)
+names(traits_novelty_list) <- startYrs
+traits_novelty <- traits_novelty_list |> 
+  bind_rows(.id = "Year") |> 
+  mutate(Year = as.numeric(Year))
+
+## staircase plot of novelty
+staircase_plot(traits_novelty)
 ```
