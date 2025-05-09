@@ -6,17 +6,12 @@ editor: visual
 
 ## Introduction
 
-Thorsten and Marie will add ...
+This is a script to calculate novelty based on Ammar et al (2021), where novelty is the degree of dissimilarity of a system (or part of the system like functional groups of aa particular trophic grouyp) relative to a reference baseline (e.g. present time window). The example datasety originates from Pecuchet et al (2019).This script will be mainly used within the ICES Working Group of Integrated assessment of the Baltic Sea and is part of ToRa, lead by Marie Nordstrom and Thorsten Blenckner.   
 
-write something about papers this is based on etc...
+This script is finally improved and provided by Elanore Campbell with support from Thorsten Blenckner
 
-Yosr et al 2021, Pecuchet et al 2019/2020, ...
 
-conceptual explanations....
 
-novelty in traits and novelty in species, interpretation of different cases
-
-plus using gams to attribute that to changes in environmental variables/drivers...
 
 ```{r libraries and directories}
 #| code-fold: true
