@@ -6,12 +6,13 @@ editor: visual
 
 ## Introduction
 
-This is a script to calculate novelty based on Ammar et al (2021), where novelty is the degree of dissimilarity of a system (or part of the system like functional groups of aa particular trophic grouyp) relative to a reference baseline (e.g. present time window). The example datasety originates from Pecuchet et al (2019).This script will be mainly used within the ICES Working Group of Integrated assessment of the Baltic Sea and is part of ToRa, lead by Marie Nordstrom and Thorsten Blenckner.   
+This is a script to calculate novelty based on Ammar et al (2021), where novelty is the degree of dissimilarity of a system (or part of the system like functional groups of a particular trophic group) relative to a reference baseline (e.g. present time window). The example dataset originates from Pecuchet et al (2019). This script will be mainly used within the ICES Working Group of Integrated assessment of the Baltic Sea and is part of ToRa, lead by Marie Nordstrom and Thorsten Blenckner.
 
-This script is finally improved and provided by Elanore Campbell with support from Thorsten Blenckner
+This script is finally improved and provided by Eleanore Campbell with support from Thorsten Blenckner.
 
+#### The code below…
 
-
+The three code chunks below load 1) required R libraries and file paths, 2) a function for calculating novelty (from the analysis/code from Yosr et al 2021), and 3) a function to create 'staircase plots' which represent novelty relative to incrementally shifted baseline years
 
 ```{r libraries and directories}
 #| code-fold: true
@@ -285,21 +286,50 @@ staircase_plot <- function(novelty_results){
 
 ## Data
 
-```{r load cwm and species biomass}
+The following code loads the data into the working environment and specifies re-structuring (via the `wrangle_data` function) in order to be used as input to the novelty function
+
+The `cwm_traits_data` dataset (stored in the file `Multitrophic_CWM_traits_BalticSea.csv`) is used for calculating degree of novelty based on functional traits. This dataset is included in the github repository, found in the 'data' folder
+
+The `biomass_data` dataset is used for calculating degree of novelty based on species biomasses as recorded in various surveys. Currently, this dataset is not publicly available, and therefore the last section ('Biotic Novelty – Species Biomass') cannot be run in the demo
+
+One point to discuss: whether to use survey data directly or to do some modeling get a more complete picture of species biomasses (undersampling bias?), distinguish between missing data and true zeros currently represented by NAs, etc
+
+```{r load cwm data}
 #| code-fold: true
 #| code-summary: Load CWM and Species Biomass Data
-#| label: load-data
+#| label: load-cwm-data
 
 cwm_traits_data <- file.path(data_dir, "Multitrophic_CWM_traits_BalticSea.csv")
+
+## for now we just use Gulf of Riga
+df0_traits <- read.csv(cwm_traits_data) |> 
+  filter(Area == "GoR")
+
+## which years apply for (all) basin(s) being analyzed
+useYrs <- 1979:2016
+startYrs <- useYrs[5:length(useYrs)-5]
+useMinYr <- min(useYrs) - 1
+```
+
+```{r wrangle species biomass data}
+#| code-fold: true
+#| code-summary: Load CWM and Species Biomass Data
+#| label: load-species-data
+
 ## note: these biomass data are survey/observation data
 ## may need to do some modeling to get better picture of actual spp biomasses
-## (undersampling bias?)
 biomass_data0 <- file.path(data_dir, "Pecuchet_Surveys_BS0.csv")
 biomass_data <- file.path(data_dir, "Pecuchet_BSsurvey.csv")
 
 if(!file.exists(biomass_data)){
   library(stringr)
   
+  if(!file.exists(biomass_data0)){
+    stop(paste(
+      "species biomass survey dataset\n",
+      "not available in the repository at this time"
+    ))
+  }
   ## read with quotation marks to be able to distinguish columns
   tmp <- read.table(biomass_data0, header = TRUE, sep = "\t", quote = "")
   colnames(tmp) <- "allsquashedtogether"
@@ -353,19 +383,12 @@ if(!file.exists(biomass_data)){
 }
 
 ## for now we just use Gulf of Riga
-df0_traits <- read.csv(cwm_traits_data) |> 
-  filter(Area == "GoR")
 df0_biomass <- read.csv(biomass_data) |> 
   ## many Benthos and Phytoplankton rows at top of table lack Species info!!
   filter(!is.na(ScientificName_accepted)) |> 
   filter(Area %in% c("43H4","46H1","44H2","44H3","45H2","45H3","Gulf_Riga",NA)) |> 
   filter(lon > 20) |> 
   mutate(Area = "GoR")
-
-## which years apply for (all) basin(s) being analyzed
-useYrs <- 1979:2016
-startYrs <- useYrs[5:length(useYrs)-5]
-useMinYr <- min(useYrs) - 1
 ```
 
 ```{r functions to wrangle data}
@@ -373,12 +396,10 @@ useMinYr <- min(useYrs) - 1
 #| code-summary: Function to Wrangle data 
 #| label: wrangling-data
 
-## make a function because this will be done 8 times...
-## 4 taxa groups (benthos, fish, zooplankton, phytoplankton) 
-## 2 calculations, on traits and species biomass
-
 ## useYrs and useMinYr defined above in load-data code chunk
-## function to fill NA using linear trend
+## these may need to be adjusted depending what years are in input dataframe df0
+
+## function to fill NAs using linear trend
 fill_trend <- function(x, idx){
   res <- x[idx]
   if(is.na(res)){
@@ -391,20 +412,22 @@ fill_trend <- function(x, idx){
   return(res)
 }
 
+
 ## four options for fun argument:
 ## bins5yr will create discrete bins, so data looks like steps with 5yr width
 ## roll5yr will take rolling mean across all values, filling in NAs in 5yr window
 ## gfroll5yr replaces (not necessarily all) NAs with a value from rolling mean
 ## gftrend replaces only (not all) NAs with value from (5yr window) lm-trend
+
 wrangle_data <- function(df0, x, taxa, fun){
   ## CWM option is for traits/ functional novelty analysis
-  ## Biomass dataset is surveys (later change to pre-processed/modeled data...?)
   if(x == "CWM"){
     df <- df0 |> 
       filter(Taxa %in% taxa) |> 
       select(Area, Year, Factor = Trait, Value) |> 
       mutate(across(c("Year", "Value"), as.numeric))
   }
+  ## Biomass dataset is surveys (change to pre-processed/modeled data...?)
   if(x == "Biomass"){
     df <- df0 |> 
       filter(Taxa == taxa) |>
@@ -602,13 +625,13 @@ wrangle_data <- function(df0, x, taxa, fun){
 
 ## Biotic Novelty – CWM Traits
 
--   will use Biomass now, still using Hellinger distance
+-   will use the `biomass` rather than `abundance` variable
 
--   testing just Gulf of Riga (so will effectively be just within-basin change/dissimilarities)
+-   will use Hellinger rather than Euclidean distance as the metric in the novelty calculation
 
--   will calculate the novelty for each species group individually
+-   testing just Gulf of Riga (will effectively give just within-basin change vs baselines)
 
--   then also calculate novelty for all species together, test whether method is sensitive enough
+-   calculations for each species group, and then also testing calculation for all taxa together (do the CWMs need to be re-adjusted when combining all taxa?)
 
 ```{r wrangle cwm traits data}
 #| code-fold: true
@@ -617,14 +640,17 @@ wrangle_data <- function(df0, x, taxa, fun){
 
 AllTaxa <- c("Phytoplankton", "Zooplankton", "Benthos", "Fish")
 
+## four options for 'fun' argument see 'wrangle-data' code chunk for details
+## bins5yr, roll5yr, gfroll5yr, gftrend
 df_traits <- df0_traits |> 
   filter(Variable == "biomass") |> 
+  ## can test also with abundance...
   # filter(Variable == "abundance") |> 
-  wrangle_data("CWM", "Phytoplankton", "gftrend")
-  # wrangle_data("CWM", "Zooplankton", "gftrend")
-  # wrangle_data("CWM", "Benthos", "gftrend")
-  # wrangle_data("CWM", "Fish", "gftrend")
-  # wrangle_data("CWM", AllTaxa, "gftrend")
+  wrangle_data(x = "CWM", taxa = "Phytoplankton", fun = "gftrend")
+  # wrangle_data(x = "CWM", taxa = "Zooplankton", fun = "gftrend")
+  # wrangle_data(x = "CWM", taxa = "Benthos", fun = "gftrend")
+  # wrangle_data(x = "CWM", taxa = "Fish", fun = "gftrend")
+  # wrangle_data(x = "CWM", taxa = AllTaxa, fun = "gftrend")
 
 # View(df_traits$data)
 df_traits$plot
@@ -692,7 +718,7 @@ staircase_plot(traits_change)
 
 ## Biotic Novelty – Species Biomass
 
--   in order to test for the difference between shifts in traits versus species, e.g. is the basin showing little trait-novelty because of redundancy in species, but higher species composition novelty?
+-   in order to test for the difference between changes in traits versus species, i.e. is the basin showing little trait-novelty because of redundancy in species, but higher species composition novelty?
 
 -   currently using survey data but may want to use modeled data to e.g. correct for undersampling bias, distinguish explicitly between NAs and zeros, etc.
 
