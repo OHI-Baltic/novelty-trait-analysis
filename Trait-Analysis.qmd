@@ -302,8 +302,7 @@ One point to discuss: whether to use survey data directly or to do some modeling
 cwm_traits_data <- file.path(data_dir, "Multitrophic_CWM_traits_BalticSea.csv")
 
 ## for now we just use Gulf of Riga
-df0_traits <- read.csv(cwm_traits_data) |> 
-  filter(Area == "GoR")
+df0_traits <- read.csv(cwm_traits_data)
 
 ## which years apply for (all) basin(s) being analyzed
 useYrs <- 1979:2016
@@ -643,9 +642,9 @@ AllTaxa <- c("Phytoplankton", "Zooplankton", "Benthos", "Fish")
 ## four options for 'fun' argument see 'wrangle-data' code chunk for details
 ## bins5yr, roll5yr, gfroll5yr, gftrend
 df_traits <- df0_traits |> 
-  filter(Variable == "biomass") |> 
+  # filter(Variable == "biomass") |> 
   ## can test also with abundance...
-  # filter(Variable == "abundance") |> 
+  filter(Variable == "abundance") |> 
   wrangle_data(x = "CWM", taxa = "Phytoplankton", fun = "gftrend")
   # wrangle_data(x = "CWM", taxa = "Zooplankton", fun = "gftrend")
   # wrangle_data(x = "CWM", taxa = "Benthos", fun = "gftrend")
@@ -661,6 +660,7 @@ df_traits$plot
 #| code-summary: Degree of Novelty in Traits
 #| label: degree-of-novelty-traits
 
+startYrs <- 1986:2011
 traits_novelty_list <- lapply(
   startYrs, FUN = function(x){
     Novelty_function(
@@ -759,7 +759,7 @@ df_spp$data <- select(df_spp$data, all_of(names(cs[which(cs == 0)])))
 
 ## note: avoid running for phytoplankton 
 ## with the about 200species it takes forever...
-traits_novelty_list <- lapply(
+spp_novelty_list <- lapply(
   startYrs, FUN = function(x){
     Novelty_function(
       M = df_spp$data,
@@ -770,11 +770,11 @@ traits_novelty_list <- lapply(
     )
   }
 )
-names(traits_novelty_list) <- startYrs
-traits_novelty <- traits_novelty_list |> 
+names(spp_novelty_list) <- startYrs
+spp_novelty <- spp_novelty_list |> 
   bind_rows(.id = "Year") |> 
   mutate(Year = as.numeric(Year))
 
 ## staircase plot of novelty
-staircase_plot(traits_novelty)
+staircase_plot(spp_novelty)
 ```

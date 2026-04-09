@@ -494,11 +494,11 @@ AllTaxa <- c("Phytoplankton", "Zooplankton", "Benthos", "Fish")
 ## four options to try for 'fun' argument 
 ## see 'wrangle-data' code above for details
 ## bins5yr, roll5yr, gfroll5yr, gftrend
-df_traits <- df0_traits |> 
-  filter(Variable == "biomass") |> 
+df_traits <- df0_biomass |> 
+  # filter(Variable == "biomass") |> 
   ## can test also with abundance...
   # filter(Variable == "abundance") |> 
-  wrangle_data(x = "CWM", taxa = "Phytoplankton", fun = "gftrend")
+  wrangle_data(x = "Biomass", taxa = "Fish", fun = "gfroll5yr")
 # wrangle_data(x = "CWM", taxa = "Zooplankton", fun = "gftrend")
 # wrangle_data(x = "CWM", taxa = "Benthos", fun = "gftrend")
 # wrangle_data(x = "CWM", taxa = "Fish", fun = "gftrend")
